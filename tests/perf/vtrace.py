@@ -10,7 +10,8 @@
       RUN_DIR/trace.json: open it in https://ui.perfetto.dev.
   vtrace.py summary RUN_DIR [RUN_DIR...]
       Latency and throughput through the pipeline, runs side by side; per uibench scenario for venera-test.ps1 Perf
-      runs (uibench.txt).
+      runs (uibench.txt). Guest spans are per process; host GPU jobs per host process, each render server named
+      after the guest process whose work it runs.
 
 A run directory holds events.jsonl (the guest's trace, decoded by venera-trace) and, from a capture, host.txt,
 kvm.txt and threads.txt (hosttrace.sh). Guest timestamps are the guest's TSC, which KVM keeps at the host's plus an
@@ -238,18 +239,18 @@ def summarize(run, a, b):
     rows.append(('seconds', f'{secs:.2f}'))
     out['trace'] = rows
 
-    # Our spans, by total time.
+    # Our spans per process, by total time: a wait in DWM and the same wait in the application mean different things.
     by_name = defaultdict(list)
-    for s, e, *_, name, _v in run.spans:
+    for s, e, pid, _tid, name, _v in run.spans:
         if a <= s <= b:
-            by_name[name].append(e - s)
+            by_name[(run.procs.get(pid, '?'), name)].append(e - s)
     rows = []
-    for name, durs in sorted(by_name.items(), key=lambda kv: -sum(kv[1]))[:24]:
+    for (proc, name), durs in sorted(by_name.items(), key=lambda kv: -sum(kv[1]))[:24]:
         ms = [run.ms(d) for d in durs]
-        rows.append((f'{name}: /s', f'{len(ms) / secs:.1f}'))
-        rows.append((f'{name}: p50 | p99 ms', f'{pct(ms, 50):.3f} | {pct(ms, 99):.3f}'))
-        rows.append((f'{name}: time %', f'{100 * sum(ms) / 1e3 / secs:.1f}'))
-    out['guest spans (UMDs, Venus)'] = rows
+        rows.append((f'{proc} {name}: /s', f'{len(ms) / secs:.1f}'))
+        rows.append((f'{proc} {name}: p50 | p99 ms', f'{pct(ms, 50):.3f} | {pct(ms, 99):.3f}'))
+        rows.append((f'{proc} {name}: time %', f'{100 * sum(ms) / 1e3 / secs:.1f}'))
+    out['guest spans per process (UMDs, Venus)'] = rows
 
     # D3D12 batches through the queue bridge.
     batches = defaultdict(dict)
@@ -291,11 +292,46 @@ def summarize(run, a, b):
     return out
 
 
+def host_clients(run):
+    """{host pid: name}: a render server (virgl-N-...) by the guest process whose work it runs, the one whose Venus
+    submits its command submissions follow soonest; a process with several (a Vulkan device and DXGI_SHARED's D3D11
+    device) gets #2, #3 by pid, so by creation. Other processes by name, digits dropped."""
+    host = run.host
+    subs = sorted((t, host.thread_pid.get(tid, tid)) for t, tid, _fence in host.submits)
+    times = [t for t, _ in subs]
+    votes = defaultdict(lambda: defaultdict(int))
+    for _s, e, pid, _tid, name, _v in run.spans:
+        if name in VENUS_SUBMITS:
+            i = bisect.bisect_left(times, e - run.offset)
+            if i < len(subs) and times[i] - (e - run.offset) < run.hz * 0.002:
+                votes[subs[i][1]][run.procs.get(pid, '?')] += 1
+    names, servers = {}, defaultdict(list)
+    for hpid in sorted(set(host.thread_pid.values())):
+        comm = host.comm.get(hpid, str(hpid))
+        if comm.startswith('virgl') and votes[hpid]:
+            guest = max(votes[hpid].items(), key=lambda kv: kv[1])[0]
+            servers[guest].append(hpid)
+            n = len(servers[guest])
+            names[hpid] = f'server of {guest}' + (f' #{n}' if n > 1 else '')
+        else:
+            names[hpid] = group_name(comm)
+    return names
+
+
 def summarize_host(run, a, b, secs):
     host = run.host
     ha, hb = a - run.offset, b - run.offset
+    clients = host_clients(run)
+
+    def client(job):
+        tid = job.get('tid')
+        if tid is None:
+            return '?'
+        pid = host.thread_pid.get(tid, tid)
+        return clients.get(pid, group_name(host.comm.get(pid, str(pid))))
+
     out = {}
-    rows = []
+    rows, per_client = [], []
     rings = defaultdict(list)
     for job in host.jobs.values():
         rings[job.get('ring', '?')].append(job)
@@ -306,18 +342,40 @@ def summarize_host(run, a, b, secs):
         busy = union_length([(j['run'], j['done']) for j in inside], ha, hb) / (hb - ha)
         rows.append((f'{ring}: busy %', f'{100 * busy:.1f}'))
         rows.append((f'{ring}: jobs /s', f'{len(inside) / secs:.0f}'))
-        by_submitter = defaultdict(list)
+        # run>done is not execution time: the kernel hands the ring a few jobs at once (amdgpu: 2), and a job's run>done
+        # includes waiting there behind the ones before it. Busy % = at least one job handed over.
+        depth, n, last = defaultdict(int), 0, ha
+        for t, d in sorted([(j['run'], 1) for j in jobs] + [(j['done'], -1) for j in jobs]):
+            depth[min(n, 2)] += max(0, min(t, hb) - max(last, ha))
+            n, last = n + d, t
+        depth[min(n, 2)] += max(0, hb - max(last, ha))
+        rows.append((f'{ring}: in flight 0 | 1 | 2+ %',
+                     ' | '.join(f'{100 * depth[k] / (hb - ha):.1f}' for k in range(3))))
+        by_client = defaultdict(list)
         for j in inside:
-            by_submitter[group_name(host.submitter(j))].append((j['run'], j['done']))
-        for who, iv in sorted(by_submitter.items(), key=lambda kv: -union_length(kv[1], ha, hb))[:4]:
-            rows.append((f'{ring}: busy % for {who}', f'{100 * union_length(iv, ha, hb) / (hb - ha):.1f}'))
+            by_client[client(j)].append(j)
+        client_busy = {who: union_length([(j['run'], j['done']) for j in cj], ha, hb) for who, cj in by_client.items()}
+        for who, t in sorted(client_busy.items(), key=lambda kv: -kv[1])[:4]:
+            rows.append((f'{ring}: busy % for {who}', f'{100 * t / (hb - ha):.1f}'))
         queued = [run.ms(j['run'] - j['queue']) for j in inside if 'queue' in j]
         if queued:
             rows.append((f'{ring}: queue>run p50 | p99 ms', f'{pct(queued, 50):.3f} | {pct(queued, 99):.3f}'))
         run_ms = [run.ms(j['done'] - j['run']) for j in inside]
         rows.append((f'{ring}: run>done p50 | p99 ms', f'{pct(run_ms, 50):.3f} | {pct(run_ms, 99):.3f}'))
         rows += idle_split(run, ring, inside, ha, hb)
+        # Who waits on a shared ring: with equal priorities everyone queues behind the busiest client; a client of
+        # higher priority (the host compositor, as DRM master) barely does.
+        for who, cj in sorted(by_client.items(), key=lambda kv: -len(kv[1]))[:8]:
+            if len(cj) / secs < 1:
+                continue
+            q = [run.ms(j['run'] - j['queue']) for j in cj if 'queue' in j]
+            r = [run.ms(j['done'] - j['run']) for j in cj]
+            per_client.append((f'{ring} {who}: jobs /s', f'{len(cj) / secs:.0f}'))
+            if q:
+                per_client.append((f'{ring} {who}: queue>run p50 | p99 ms', f'{pct(q, 50):.2f} | {pct(q, 99):.2f}'))
+            per_client.append((f'{ring} {who}: run>done p50 | p99 ms', f'{pct(r, 50):.2f} | {pct(r, 99):.2f}'))
     out['host GPU'] = rows
+    out['host GPU per process'] = per_client
 
     groups = defaultdict(int)
     for tid, iv in host.running.items():
@@ -377,13 +435,19 @@ def summarize_display(run, a, b, secs):
     vsync, flips, frames = times(DXGK, 17), times(DXGK, 116), times(DWM, 10)
     vi, fl, fr = intervals(vsync), intervals(flips), intervals(frames)
     period = pct(vi, 50)
-    frame_cpu, open_frame = [], None
+    frame_cpu, frame_spans, open_frame = [], [], None
     for t, _, _, p, i, _, _ in inside:
         if p == DWM and i == 10:
             open_frame = t
         elif p == DWM and i == 12 and open_frame is not None:
             frame_cpu.append(run.ms(t - open_frame))
+            frame_spans.append((open_frame, t))
             open_frame = None
+    # How much of DWM's frames our D3D11 UMD spent waiting for DWM's own GPU work (Flush with shared surfaces).
+    dwm_waits = sorted((s, e) for s, e, pid, _tid, name, _v in run.spans
+                       if pid in dwm_pids and name == 'd3d11.wait_idle')
+    frame_total = sum(e - s for s, e in frame_spans)
+    frame_waiting = sum(union_length(dwm_waits, s, e) for s, e in frame_spans)
     to_flip, fi = [], 0
     for t, pid, _, p, i, _, _ in inside:
         if p == DXGK and i == 184 and pid in dwm_pids:
@@ -414,6 +478,7 @@ def summarize_display(run, a, b, secs):
         ('DWM frames /s', f'{len(frames) / secs:.1f}'),
         ('DWM frame gap p50 | p99 ms', f'{f2(pct(fr, 50))} | {f2(pct(fr, 99))}'),
         ('DWM frame CPU p50 | p99 ms', f'{f2(pct(frame_cpu, 50))} | {f2(pct(frame_cpu, 99))}'),
+        ('DWM frame CPU in d3d11.wait_idle %', f'{100 * frame_waiting / frame_total:.0f}' if frame_total else '-'),
         ('flips /s', f'{len(flips) / secs:.1f}'),
         ('flip gap p95 | p99 ms', f'{f2(pct(fl, 95))} | {f2(pct(fl, 99))}'),
         ('flip gaps > 2.5 periods', str(sum(1 for v in fl if v > 2.5 * period)) if period == period else '-'),
