@@ -1,0 +1,145 @@
+From: venera_d3d12
+Subject: venus: create every queue but DWM's at low host priority on Windows
+
+Every guest process's GPU work runs on a host context of its own (one render server per Venus context), and the
+host GPU scheduler runs higher priorities first. At equal priority, DWM queued behind a GPU-bound application: under
+Steel Nomad Light (vtrace build/perf/load), DWM's host jobs ran 0.2 ms after waiting 11 ms (p99 19 ms), DWM spent
+89% of its frame time waiting for them, and about one refresh in four was skipped. The host compositor, at a higher
+priority, waited 0.5 ms on the same ring.
+
+The render servers run without CAP_SYS_NICE, so amdgpu refuses a priority above normal: DWM cannot be raised. Every
+other process asks for less instead: unless the process is dwm.exe, each queue is created with
+VkDeviceQueueGlobalPriorityCreateInfo LOW (KHR_global_priority, or EXT, enabled on the host device for it), when the
+host reports LOW for the queue's family. A priority the application set itself stays.
+
+Host clients at normal priority (other host applications, QEMU's display) now also run ahead of guest applications.
+
+Same scene with this patch (build/perf/load-lowprio): DWM's host queue wait p50 | p99 11.0 | 19.3 -> 1.9 | 8.3 ms,
+DWM frame CPU time p50 14.1 -> 4.7 ms, frames reaching the display 44.8 -> 57.6 of 60 per second. The remaining p99
+is a benchmark job already on the ring, which priority cannot preempt.
+
+--- a/src/virtio/vulkan/vn_device.c	2026-11-16 20:27:55.554693547 +0800
++++ b/src/virtio/vulkan/vn_device.c	2026-11-16 20:29:04.263847951 +0800
+@@ -12,6 +12,7 @@
+ 
+ #include "util/disk_cache.h"
+ #include "util/hex.h"
++#include "util/u_process.h"
+ #include "venus-protocol/vn_protocol_driver_device.h"
+ 
+ #include "vn_android.h"
+@@ -243,9 +244,46 @@
+    return true;
+ }
+ 
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++/* Every guest process's GPU work runs on a host context of its own, and the
++ * host scheduler runs higher priorities first. The render servers may not
++ * raise a priority (that needs CAP_SYS_NICE), so the compositor gets ahead
++ * by every other process asking for less: at the same priority, DWM's
++ * frames queued about 11 ms behind a GPU-bound application and missed
++ * refreshes.
++ */
++static bool
++vn_device_wants_low_priority(const struct vn_physical_device *physical_dev)
++{
++   const struct vk_device_extension_table *renderer_exts =
++      &physical_dev->renderer_extensions;
++   if (!physical_dev->global_priority_properties ||
++       (!renderer_exts->KHR_global_priority &&
++        !renderer_exts->EXT_global_priority))
++      return false;
++
++   const char *name = util_get_process_name();
++   return !name || strcasecmp(name, "dwm.exe");
++}
++
++static bool
++vn_device_family_has_low_priority(const struct vn_physical_device *physical_dev,
++                                  uint32_t family)
++{
++   const VkQueueFamilyGlobalPriorityProperties *props =
++      &physical_dev->global_priority_properties[family];
++   for (uint32_t i = 0; i < props->priorityCount; i++) {
++      if (props->priorities[i] == VK_QUEUE_GLOBAL_PRIORITY_LOW)
++         return true;
++   }
++   return false;
++}
++#endif
++
+ static const VkDeviceCreateInfo *
+ vn_device_fix_create_info(const struct vn_device *dev,
+                           const VkDeviceCreateInfo *dev_info,
++                          bool low_priority,
+                           const VkAllocationCallbacks *alloc,
+                           VkDeviceCreateInfo *local_info)
+ {
+@@ -373,6 +411,14 @@
+       block_exts[block_count++] = VK_EXT_TOOLING_INFO_EXTENSION_NAME;
+    }
+ 
++   /* see vn_device_wants_low_priority */
++   if (low_priority && !app_exts->KHR_global_priority &&
++       !app_exts->EXT_global_priority) {
++      extra_exts[extra_count++] = renderer_exts->KHR_global_priority
++                                     ? VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME
++                                     : VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME;
++   }
++
+    if (app_exts->EXT_pci_bus_info) {
+       /* always filter for simplicity */
+       block_exts[block_count++] = VK_EXT_PCI_BUS_INFO_EXTENSION_NAME;
+@@ -529,8 +575,13 @@
+    dev->renderer = instance->renderer;
+    dev->primary_ring = instance->ring.ring;
+ 
+-   create_info =
+-      vn_device_fix_create_info(dev, create_info, alloc, &local_create_info);
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++   const bool low_priority = vn_device_wants_low_priority(physical_dev);
++#else
++   const bool low_priority = false;
++#endif
++   create_info = vn_device_fix_create_info(dev, create_info, low_priority,
++                                           alloc, &local_create_info);
+    if (!create_info)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+@@ -555,8 +606,36 @@
+          break;
+       }
+    }
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++   /* A priority the application chose stays. */
++   STACK_ARRAY(VkDeviceQueueGlobalPriorityCreateInfo, priority_infos,
++               create_info->queueCreateInfoCount);
++   if (low_priority) {
++      if (final_create_info.pQueueCreateInfos != queue_infos) {
++         typed_memcpy(queue_infos, create_info->pQueueCreateInfos,
++                      create_info->queueCreateInfoCount);
++         final_create_info.pQueueCreateInfos = queue_infos;
++      }
++      for (uint32_t i = 0; i < create_info->queueCreateInfoCount; i++) {
++         if (vk_find_struct_const(queue_infos[i].pNext,
++                                  DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO) ||
++             !vn_device_family_has_low_priority(
++                physical_dev, queue_infos[i].queueFamilyIndex))
++            continue;
++         priority_infos[i] = (VkDeviceQueueGlobalPriorityCreateInfo){
++            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO,
++            .pNext = queue_infos[i].pNext,
++            .globalPriority = VK_QUEUE_GLOBAL_PRIORITY_LOW,
++         };
++         queue_infos[i].pNext = &priority_infos[i];
++      }
++   }
++#endif
+    result = vn_call_vkCreateDevice(dev->primary_ring, physical_dev_handle,
+                                    &final_create_info, NULL, &dev_handle);
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++   STACK_ARRAY_FINISH(priority_infos);
++#endif
+    STACK_ARRAY_FINISH(queue_infos);
+ 
+    /* free the fixed extensions here since no longer needed below */
