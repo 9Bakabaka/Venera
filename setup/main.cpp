@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// venera-setup.exe: the installer, a wizard window (ui.cpp) with the log in view while it works. It checks the system (Windows 11 x64, a VirtIO GPU, Secure Boot off, test signing
+// venera-setup.exe: the installer, a wizard window (ui.cpp) with the log in view while it works. It checks the system (Windows 11, matching native architecture, a VirtIO GPU, Secure Boot off, test signing
 // on; it offers to turn test signing on), says what it will replace, and installs, updates or reinstalls the driver
 // package (install.cpp). The copy it leaves in Program Files uninstalls.
 //   venera-setup.exe [/S] [/testsigning]     install or update; /S: silently; /testsigning: with /S, turn test signing
@@ -189,9 +189,13 @@ int run_install(const Options& opts)
 {
     SystemState s = inspect();
     log(s.summary());
-    if (!s.x64 || s.build < 22000)
-        return blocked(s, L"Venera needs 64-bit Windows 11",
-                       format(L"This is Windows build %lu%ls.", s.build, s.x64 ? L"" : L", not x64"));
+    if (s.build < 22000)
+        return blocked(s, L"Venera needs Windows 11", format(L"This is Windows build %lu.", s.build));
+    if (!venera::packageMatchesNative(venera::targetArchitecture(), s.native_arch))
+        return blocked(s, L"The installer does not match this Windows architecture",
+                       format(L"This installer contains %ls drivers. Windows uses %ls; run the installer for that "
+                              L"architecture.", venera::architectureName(venera::targetArchitecture()),
+                              venera::architectureName(s.native_arch)));
     if (s.devices == 0)
         return blocked(s, L"There is no VirtIO GPU",
                        std::wstring(L"The VM needs a virtio-vga or virtio-gpu device with Venus (QEMU: blob=true, "

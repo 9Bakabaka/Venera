@@ -5,7 +5,7 @@
 set(WDK_INC "${VENERA_WINKITS_DIR}/wdk/c/Include/10.0.26100.0")
 set(SDK_INC "${VENERA_WINKITS_DIR}/sdk/c/Include/10.0.26100.0")
 if(NOT EXISTS "${WDK_INC}/um/d3d12umddi.h")
-  message(FATAL_ERROR "d3d12umddi.h not found under ${WDK_INC}; see plan.md (Build) for fetching the WDK headers")
+  message(FATAL_ERROR "d3d12umddi.h not found under ${WDK_INC}; run cmake/fetch-winkits.sh")
 endif()
 
 set(VENERA_UMD_WARNINGS -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
@@ -47,7 +47,7 @@ add_subdirectory(d3d12)
 add_subdirectory(d3d11)
 
 # --- 32-bit --------------------------------------------------------------------------------------------------------
-# The x86_64 build builds the 32-bit UMDs too, as a build tree of this project of its own (umd32/) with the i686
+# Both native 64-bit builds build the x86 UMDs too, as a separate build tree (umd32/) with the i686
 # toolchain, which has only the UMDs and the d3d9caps probe (CMakeLists.txt). The installer packs both sets of UMDs
 # (setup/CMakeLists.txt).
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)

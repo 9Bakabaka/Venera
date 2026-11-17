@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Updates from GitHub, for the About page and venera-panel /update. Two channels: Release, the newest tagged release
-// (its venera-setup-<version>.exe), and Develop, the newest build of main from the build workflow (an artifact, a zip
+// (its venera-setup-<version>-<arch>.exe), and Develop, the newest build of main from the build workflow (an artifact, a zip
 // with the installer and a disc image). The version and GitHub's SHA-256 of the file come from GitHub's API alone.
 // GitHub lets only signed-in users download artifacts, so builds of main come through nightly.link, which passes them
 // on from GitHub's storage; the checksum makes it the same file.
@@ -11,6 +11,7 @@
 // itself when that does not match), unpacks the zip there with Windows' tar.exe, checks the installer's version
 // resource and starts it.
 #include "panel.h"
+#include "update_asset.h"
 
 #include <bcrypt.h>
 #include <sddl.h>
@@ -559,11 +560,11 @@ Update findUpdate(Channel c)
             return u;
         for (const Json& a : j["assets"].items) {
             std::wstring name = a["name"].str();
-            size_t at = name.find(L"-setup-");
-            if (at == std::wstring::npos || !endsWith(name, L".exe"))
+            std::wstring version = installerAssetVersion(name, venera::targetArchitecture(), L".exe");
+            if (version.empty())
                 continue;
             u.name = name;
-            u.version = name.substr(at + 7, name.size() - at - 7 - 4);
+            u.version = std::move(version);
             u.url = a["url"].str();  // the API's: github.com's download links fail with HTTP 504 at times
             u.sha256 = sha256Of(a["digest"]);
             u.size = _wcstoui64(a["size"].str().c_str(), nullptr, 10);
@@ -600,9 +601,10 @@ Update findUpdate(Channel c)
             return u;
         for (const Json& a : artifacts["artifacts"].items) {
             std::wstring name = a["name"].str();
-            if (a["expired"].b || name.compare(0, 13, L"venera-setup-"))
+            std::wstring version = installerAssetVersion(name, venera::targetArchitecture(), L"");
+            if (a["expired"].b || version.empty())
                 continue;
-            u.version = name.substr(13);
+            u.version = std::move(version);
             u.name = name + L".zip";
             u.url = kArtifacts + a["id"].str() + L".zip";
             u.sha256 = sha256Of(a["digest"]);
@@ -686,7 +688,7 @@ std::wstring installUpdate(Channel c, const std::wstring& downloaded,
 
     std::wstring exe = file;
     if (endsWith(u.name, L".zip")) {
-        std::wstring member = L"venera-setup-" + u.version + L".exe";
+        std::wstring member = u.name.substr(0, u.name.size() - 4) + L".exe";
         error = unzip(file, member, dir);
         DeleteFileW(file.c_str());
         if (!error.empty())

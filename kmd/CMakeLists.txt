@@ -12,16 +12,26 @@ cmake_minimum_required(VERSION 3.24)
 project(venera-kmd LANGUAGES C CXX)
 
 get_filename_component(VENERA_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
-set(VENERA_WINKITS_DIR "${VENERA_ROOT}/refs/winkits" CACHE PATH "WDK/SDK from the Microsoft.Windows.WDK.x64 / SDK.CPP NuGet packages")
+set(VENERA_WINKITS_DIR "${VENERA_ROOT}/refs/winkits" CACHE PATH "WDK/SDK from Microsoft's WDK / SDK.CPP NuGet packages")
 set(VENERA_KMD_SIGN_PFX "${CMAKE_SOURCE_DIR}/yttrium/build/VirtIOTestCert.pfx" CACHE FILEPATH
     "Test certificate for signing; yttrium's own, which guests running its test-signed builds already trust")
 
 set(wdk_inc "${VENERA_WINKITS_DIR}/wdk/c/Include/10.0.26100.0")
 set(sdk_inc "${VENERA_WINKITS_DIR}/sdk/c/Include/10.0.26100.0")
-set(wdk_lib "${VENERA_WINKITS_DIR}/wdk/c/Lib/10.0.26100.0/km/x64")
+if(VENERA_TARGET_ARCH STREQUAL "x64" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
+  set(wdk_arch x64)
+  set(kmd_arch_definitions _AMD64_ AMD64)
+elseif(VENERA_TARGET_ARCH STREQUAL "arm64" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64")
+  # Microsoft's ARM64 NuGet package uses an upper-case directory on Linux.
+  set(wdk_arch ARM64)
+  set(kmd_arch_definitions _ARM64_ ARM64)
+else()
+  message(FATAL_ERROR "Configure the KMD with cmake/clang-cl-kmd.cmake and VENERA_TARGET_ARCH=x64 or arm64")
+endif()
+set(wdk_lib "${VENERA_WINKITS_DIR}/wdk/c/Lib/10.0.26100.0/km/${wdk_arch}")
 foreach(f "${wdk_inc}/km/ntddk.h" "${wdk_lib}/displib.lib")
   if(NOT EXISTS "${f}")
-    message(FATAL_ERROR "${f} missing: extract the WDK NuGet package (c/Include and c/Lib/.../km/x64) into ${VENERA_WINKITS_DIR}/wdk")
+    message(FATAL_ERROR "${f} missing: run cmake/fetch-winkits.sh ${VENERA_WINKITS_DIR} ${VENERA_TARGET_ARCH}")
   endif()
 endforeach()
 
@@ -52,11 +62,14 @@ execute_process(COMMAND sh "${CMAKE_SOURCE_DIR}/casefix.sh" "${gen}/casefix" ${i
 
 # --- viogpu3d.sys --------------------------------------------------------------------------------------------------
 list(TRANSFORM sources PREPEND "${src}/")
-add_executable(viogpu3d ${sources} shim/portio.c)
+add_executable(viogpu3d ${sources})
+if(VENERA_TARGET_ARCH STREQUAL "x64")
+  target_sources(viogpu3d PRIVATE shim/portio.c)
+endif()
 set_target_properties(viogpu3d PROPERTIES SUFFIX ".sys" MSVC_RUNTIME_LIBRARY "")
 # yttrium publishes debug builds (DBG=1: kdebugprint logging, assertions); we match that.
 target_compile_definitions(viogpu3d PRIVATE
-    _WIN64 _AMD64_ AMD64 _KERNEL_MODE WINNT=1 WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A00000F
+    _WIN64 ${kmd_arch_definitions} _KERNEL_MODE WINNT=1 WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A00000F
     POOL_NX_OPTIN=1 DEPRECATE_DDK_FUNCTIONS=1 DBG=1 VIOGPU_3D=1)
 target_compile_options(viogpu3d PRIVATE
     -kernel /GS- /Gy /Z7 /O2 /W0 /Zc:wchar_t- -fms-compatibility -fms-extensions
@@ -83,6 +96,12 @@ target_link_options(viogpu3d PRIVATE
 target_link_libraries(viogpu3d PRIVATE
     "${wdk_lib}/bufferoverflowfastfailk.lib" "${wdk_lib}/ntoskrnl.lib" "${wdk_lib}/hal.lib" "${wdk_lib}/wmilib.lib"
     "${wdk_lib}/displib.lib")
+if(VENERA_TARGET_ARCH STREQUAL "arm64")
+  # displib's ARM64 prologues use Microsoft's GS push/pop helpers. The WDK
+  # kernel CRT supplies those ABI routines; bufferoverflowfastfailk supplies
+  # the cookie initialization and failure handler.
+  target_link_libraries(viogpu3d PRIVATE "${wdk_lib}/libcntpr.lib")
+endif()
 
 # Test-signed copy, the file the guest loads.
 find_program(OSSLSIGNCODE osslsigncode REQUIRED)

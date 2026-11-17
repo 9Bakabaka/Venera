@@ -9,8 +9,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # The toolchain file names the MinGW triple, which the meson builds use too (cmake/meson.cmake).
 if(NOT WIN32 OR NOT VENERA_MINGW_TRIPLE)
-  message(FATAL_ERROR "Venera builds for the Windows guest only: configure with -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake")
+  message(FATAL_ERROR "Venera builds for Windows guests: use cmake/mingw-w64.cmake (x64) or cmake/llvm-mingw-arm64.cmake (Arm64)")
 endif()
+include(cmake/target-arch.cmake)
 
 # ccache, from the dev shell, for our targets and the meson builds below (cmake/meson.cmake).
 find_program(VENERA_CCACHE ccache)
@@ -22,7 +23,7 @@ endif()
 option(VENERA_RELEASE "A release build, which CI sets for tags; any other is a develop build (of main)" OFF)
 
 set(VENERA_WINKITS_DIR "${CMAKE_SOURCE_DIR}/refs/winkits" CACHE PATH
-    "WDK/SDK headers extracted from the Microsoft.Windows.WDK.x64 / SDK.CPP NuGet packages (umd only)")
+    "WDK/SDK headers extracted from the Microsoft.Windows.WDK / SDK.CPP NuGet packages (umd only)")
 
 # Third-party headers: the Vulkan headers vkd3d-proton pins, and DirectX-Headers (git submodule, pinned).
 add_library(venera-vulkan-headers INTERFACE)

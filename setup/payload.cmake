@@ -2,12 +2,15 @@
 # Run by the build (setup/CMakeLists.txt): stamps pkg/venera.inf with the version and the build, packs it with the files
 # it lists (FILES, which also brings the control panel; the INF ignores what it does not name) into payload.wim, and
 # writes payload.rc, which puts the WIM, the version and Windows' version information into venera-setup.exe.
-#   cmake -DSOURCE_DIR= -DOUT_DIR= -DVERSION=x.y.z -DGIT= -DWIMLIB= -DFILES=a;b -P payload.cmake
+#   cmake -DSOURCE_DIR= -DOUT_DIR= -DVERSION=x.y.z -DVENERA_TARGET_ARCH=x64|arm64 -DGIT= -DWIMLIB= -DFILES=a;b -P payload.cmake
 #
 # The version is VERSION (the project's), the commit count, so each commit on main ranks above the one before it, and
 # the abbreviated commit hash: 0.1.0.97.8ba40fd. DriverVer and the version resource take four numbers and leave the
 # hash out. The build line in the INF makes every build a package of its own in the driver store, also two builds of
 # one commit.
+include("${CMAKE_CURRENT_LIST_DIR}/package.cmake")
+venera_validate_payload(${FILES})
+
 execute_process(COMMAND "${GIT}" -C "${SOURCE_DIR}" rev-list --count HEAD
                 OUTPUT_VARIABLE count OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE r ERROR_QUIET)
 if(NOT r EQUAL 0)
@@ -28,7 +31,7 @@ string(TIMESTAMP now "%Y-%m-%dT%H:%M:%SZ" UTC)
 set(pkg "${OUT_DIR}/package")
 file(REMOVE_RECURSE "${pkg}")
 file(MAKE_DIRECTORY "${pkg}")
-file(READ "${SOURCE_DIR}/pkg/venera.inf" inf)
+venera_configure_inf("${SOURCE_DIR}/pkg/venera.inf" inf)
 string(REPLACE "\r" "" inf "${inf}")
 string(REGEX REPLACE "\nDriverVer *=[^\n]*" "\n; Built from ${describe} at ${now}.\nDriverVer   = ${date},${number}"
        stamped "${inf}")

@@ -34,9 +34,10 @@ add_custom_command(
     OUTPUT payload.wim payload.rc version.txt
     # The dev shell sets SOURCE_DATE_EPOCH (1980), which string(TIMESTAMP) would take for the build time.
     COMMAND "${CMAKE_COMMAND}" -E env --unset=SOURCE_DATE_EPOCH "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}" "-DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-            "-DVERSION=${PROJECT_VERSION}" "-DGIT=${GIT_EXECUTABLE}" "-DWIMLIB=${WIMLIB}" "-DFILES=${payload}"
+            "-DVERSION=${PROJECT_VERSION}" "-DVENERA_TARGET_ARCH=${VENERA_TARGET_ARCH}"
+            "-DGIT=${GIT_EXECUTABLE}" "-DWIMLIB=${WIMLIB}" "-DFILES=${payload}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/payload.cmake"
-    DEPENDS payload.cmake "${CMAKE_SOURCE_DIR}/pkg/venera.inf" ${payload} ${head_log}
+    DEPENDS payload.cmake package.cmake "${CMAKE_SOURCE_DIR}/pkg/venera.inf" ${payload} ${head_log}
     COMMENT "Packing the driver package and the control panel"
     VERBATIM)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/payload.rc" PROPERTIES
@@ -60,6 +61,9 @@ set(license_tabs
     "Vulkan-Headers|third_party/vkd3d-proton/khronos/Vulkan-Headers/LICENSE.md|MIT=third_party/vkd3d-proton/khronos/Vulkan-Headers/LICENSES/MIT.txt"
     "MinGW-w64|setup/licenses/mingw-w64-runtime.txt"
     "GCC runtime and mcfgthread|mcfgthread=setup/licenses/mcfgthread.md|GCC Runtime Library Exception 3.1=setup/licenses/gcc-exception-3.1.txt|GNU Lesser General Public License 3.0=setup/licenses/lgpl-3.0.txt|GNU General Public License 3.0=setup/licenses/gpl-3.0.txt")
+if(VENERA_TARGET_ARCH STREQUAL "arm64")
+  list(APPEND license_tabs "LLVM runtime|setup/licenses/LLVM.txt")
+endif()
 # Written at configure time, one text per tab, starting with its name on a line of its own; licenses.rc puts them in
 # as RCDATA 200, 201, ... (ui.cpp). A changed text configures again. Not file(CONFIGURE): it would expand @...@ in them.
 function(write_if_changed path content)

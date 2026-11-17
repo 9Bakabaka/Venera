@@ -25,5 +25,5 @@ add_executable(viogpuap
 target_include_directories(viogpuap PRIVATE compat ${viogpu}/viogpuap ${viogpu}/shared)
 target_compile_definitions(viogpuap PRIVATE ${svc_definitions})
 target_compile_options(viogpuap PRIVATE ${svc_options})
-target_link_libraries(viogpuap PRIVATE gdi32 user32 cfgmgr32 advapi32 wtsapi32 userenv)
+target_link_libraries(viogpuap PRIVATE gdi32 user32 cfgmgr32 advapi32 wtsapi32 userenv uuid)
 target_link_options(viogpuap PRIVATE ${svc_link_options})

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Replays the same desktop interactions on every build, so UI smoothness can be compared between builds instead of
-// judged by feel. Each scenario runs for a fixed time; for each one it writes its start and end (the TSC, the clock
-// venera-trace timestamps with, so a trace taken meanwhile can be cut into scenarios), the frames DWM composed, and
+// judged by feel. Each scenario runs for a fixed time and writes its start and end in the clock used by
+// venera-trace (so a trace can be cut into scenarios), the frames DWM composed, and
 // the CPU time used by DWM and by the whole system.
 //   uibench [--out FILE] [scenario...]
 // Scenarios (all of them, in this order, by default):
@@ -13,7 +13,7 @@
 // Run it in the interactive user's session (input and DWM animations need the user's desktop).
 #include <windows.h>
 #include <dwmapi.h>
-#include <intrin.h>
+#include "trace_clock.h"
 #include <tlhelp32.h>
 
 #include <cmath>
@@ -120,7 +120,7 @@ Sample sample()
 {
     Sample s = {};
     s.time = now_filetime();
-    s.tsc = __rdtsc();
+    s.tsc = venera::trace_clock::now();
     DWM_TIMING_INFO info = {};
     info.cbSize = sizeof(info);
     if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &info))) {

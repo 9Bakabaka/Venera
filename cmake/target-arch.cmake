@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Architecture is an ABI, not a pointer size: both AMD64 and ARM64 use 64-bit pointers.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  set(_venera_arch x64)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(i[3-6]86|x86)$")
+  set(_venera_arch x86)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|ARM64|arm64)$")
+  set(_venera_arch arm64)
+else()
+  message(FATAL_ERROR "Unsupported Windows target processor: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+if(DEFINED VENERA_TARGET_ARCH AND NOT VENERA_TARGET_ARCH STREQUAL _venera_arch)
+  message(FATAL_ERROR "VENERA_TARGET_ARCH=${VENERA_TARGET_ARCH} disagrees with toolchain processor ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+set(VENERA_TARGET_ARCH "${_venera_arch}")
+unset(_venera_arch)

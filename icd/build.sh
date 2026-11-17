@@ -1,17 +1,34 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 # Builds yttrium's Mesa drivers for the guest from the pinned Mesa fork (third_party/virtio-win-mesa) with
-# icd/patches/*.patch applied, cross-compiled with the dev shell's MinGW GCC: the Venus Vulkan driver
+# icd/patches/*.patch applied, cross-compiled with MinGW GCC (x64/x86) or LLVM-MinGW (ARM64): the Venus Vulkan driver
 # (venera_vulkan_virtio.dll) and the OpenGL driver (viogpu_wgl.dll: WGL on zink, so OpenGL runs on Venus too), each
 # for x86_64 and, for 32-bit processes, for i686 (venera_vulkan_virtio_32.dll, viogpu_wgl_32.dll).
 #
-#   icd/build.sh [build-dir]      (default build/icd; run inside nix develop)
+#   icd/build.sh [build-dir] [x64|arm64]      (default build/icd, x64; run inside nix develop)
 #
 # The submodule stays pristine: the build compiles an exported copy with the patches applied.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:-$root/build/icd}
+arch=${2:-x64}
+case "$arch" in
+    x64|arm64) ;;
+    *) echo "icd: unsupported target architecture '$arch' (expected x64 or arm64)" >&2; exit 1 ;;
+esac
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+# Meson caches the target compiler. A build directory belongs to one native ABI.
+if [ -f "$out/.target-arch" ] && [ "$(cat "$out/.target-arch")" != "$arch" ]; then
+    echo "icd: $out belongs to $(cat "$out/.target-arch"); use a separate directory for $arch" >&2
+    exit 1
+fi
+if [ ! -f "$out/.target-arch" ] && { [ -f "$out/meson/build.ninja" ] || [ -f "$out/meson32/build.ninja" ]; }; then
+    echo "icd: $out contains an existing build without target ABI metadata; use a separate build directory" >&2
+    exit 1
+fi
+printf '%s\n' "$arch" > "$out/.target-arch"
 mesa=$root/third_party/virtio-win-mesa
 src=$out/src
 
@@ -25,7 +42,6 @@ options="--buildtype=release -Db_ndebug=true -Dc_std=c11 \
     -Dlibunwind=disabled -Dbuild-tests=false -Dvideo-codecs= -Dmicrosoft-clc=disabled \
     -Dspirv-tools=disabled"
 
-mkdir -p "$out"
 stamp="$(git -C "$mesa" rev-parse HEAD) $options"
 for p in "$root"/icd/patches/*.patch; do
     stamp="$stamp $(sha256sum "$p" | cut -d' ' -f1)"
@@ -43,37 +59,12 @@ fi
 
 # d3dkmthk.h and friends, which MinGW lacks, from the SDK after MinGW's own headers (as for the UMD).
 sdk_shared=$root/refs/winkits/sdk/c/Include/10.0.26100.0/shared
-# meson adds ccache itself only for native compilers: name it in the cross file.
-launcher=
-if command -v ccache >/dev/null; then
-    launcher="'ccache', "
-fi
-
 # Builds the two drivers for one architecture into $out/<build> and copies them to $out with a suffix:
-#   build_arch <build> <triple> <meson cpu_family> <cpu> <mcfgthread include> <mcfgthread lib> <suffix>
+#   build_arch <build> <arch> <suffix>
 # GCC from nixpkgs uses the mcfgthread model; link it and the GCC runtime statically, as the UMD does.
 build_arch() {
-    build=$out/$1 triple=$2 cpu_family=$3 cpu=$4 mcfg_include=$5 mcfg_lib=$6 suffix=$7
-    cat > "$out/cross$suffix.ini" <<EOF
-[binaries]
-c = [${launcher}'$triple-gcc']
-cpp = [${launcher}'$triple-g++']
-ar = '$triple-ar'
-strip = '$triple-strip'
-windres = '$triple-windres'
-
-[built-in options]
-c_args = ['-isystem', '$mcfg_include', '-idirafter', '$sdk_shared']
-cpp_args = ['-isystem', '$mcfg_include']
-c_link_args = ['-L$mcfg_lib', '-static', '-static-libgcc']
-cpp_link_args = ['-L$mcfg_lib', '-static', '-static-libgcc', '-static-libstdc++']
-
-[host_machine]
-system = 'windows'
-cpu_family = '$cpu_family'
-cpu = '$cpu'
-endian = 'little'
-EOF
+    build=$out/$1 target=$2 suffix=$3
+    sh "$root/icd/cross-file.sh" "$out/cross$suffix.ini" "$target" "$sdk_shared"
 
     if [ ! -f "$build/build.ninja" ]; then
         # shellcheck disable=SC2086 # word splitting intended: the options list
@@ -86,5 +77,5 @@ EOF
     echo "icd: $out/venera_vulkan_virtio$suffix.dll $out/viogpu_wgl$suffix.dll"
 }
 
-build_arch meson x86_64-w64-mingw32 x86_64 x86_64 "$VENERA_MINGW_MCFG_INCLUDE" "$VENERA_MINGW_MCFG_LIB" ""
-build_arch meson32 i686-w64-mingw32 x86 i686 "$VENERA_MINGW32_MCFG_INCLUDE" "$VENERA_MINGW32_MCFG_LIB" _32
+build_arch meson "$arch" ""
+build_arch meson32 x86 _32

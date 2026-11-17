@@ -3,6 +3,7 @@
 // does and exits with 0 when it passed. A crash (the child reports where first) or a hang fails only that test, and
 // the panel and the command line carry on with the next.
 #include "../panel.h"
+#include "../../umd/common/stack_walk.h"
 
 #include <cstdio>
 #include <thread>
@@ -52,11 +53,13 @@ LONG CALLBACK reportCrash(EXCEPTION_POINTERS* e)
                 static_cast<unsigned long long>(offset), r->ExceptionAddress,
                 kind == 1 ? "writing" : kind == 8 ? "executing" : "reading",
                 static_cast<unsigned long long>(r->ExceptionInformation[1]), GetCurrentThreadId());
-    // A call through a null pointer leaves the caller's return address on top of the stack.
-    void* ret = *reinterpret_cast<void**>(e->ContextRecord->Rsp);
-    name = module(ret, &offset);
-    std::printf("  return address on stack: %s+0x%llx (%p)\n", name.c_str(), static_cast<unsigned long long>(offset),
-                ret);
+    DWORD64 frames[32];
+    unsigned count = venera::umd::walk_stack(*e->ContextRecord, frames, 32);
+    for (unsigned i = 0; i < count; ++i) {
+        void* address = reinterpret_cast<void*>(static_cast<uintptr_t>(frames[i]));
+        name = module(address, &offset);
+        std::printf("  %s+0x%llx (%p)\n", name.c_str(), static_cast<unsigned long long>(offset), address);
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 

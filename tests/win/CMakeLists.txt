@@ -30,6 +30,7 @@ target_link_libraries(d3d11caps PRIVATE d3d11 dxgi dxguid)
 target_link_options(d3d11caps PRIVATE -static -static-libgcc -static-libstdc++)
 
 add_executable(uibench uibench.cpp)
+target_compile_definitions(uibench PRIVATE _WIN32_WINNT=0x0A00)
 target_link_libraries(uibench PRIVATE dwmapi winmm user32 gdi32)
 target_link_options(uibench PRIVATE -static -static-libgcc -static-libstdc++)
 

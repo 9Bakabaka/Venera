@@ -5,6 +5,8 @@
 
 #include <windows.h>
 
+#include "../pkg/architecture.h"
+
 #include <setupapi.h>
 #include <shlobj.h>
 
@@ -58,7 +60,7 @@ struct DriverPackage {
 // What the installer needs to know about the system before it changes anything (system.cpp).
 struct SystemState {
     DWORD build = 0;
-    bool x64 = false;
+    venera::Architecture native_arch = venera::Architecture::unknown;
     // The VirtIO GPU (present devices with kHardwareId) and the driver it runs on now.
     int devices = 0;
     std::wstring device_driver, device_provider, device_version, device_inf;

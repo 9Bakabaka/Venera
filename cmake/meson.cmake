@@ -6,7 +6,7 @@
 find_program(VENERA_MESON meson REQUIRED)
 find_program(VENERA_NINJA ninja REQUIRED)
 
-# Writes a meson cross file for this build's MinGW compilers (x86_64 or i686: the toolchain file's VENERA_MINGW_TRIPLE)
+# Writes a meson cross file for this build's MinGW compilers (including native ARM64 with LLVM-MinGW).
 # to `path`. GCC from nixpkgs uses the mcfgthread model, whose headers and library live outside the wrapper's paths
 # (the toolchain file's VENERA_MINGW_MCFG_*). Written only when it changes: meson rebuilds everything when its cross
 # file is touched.
@@ -28,13 +28,18 @@ function(venera_meson_cross_file path)
   if(VENERA_CCACHE)
     set(launcher "'${VENERA_CCACHE}', ")
   endif()
+  set(widl "")
+  if(VENERA_MINGW_WIDL)
+    set(widl "widl = '${VENERA_MINGW_WIDL}'")
+  endif()
   file(CONFIGURE OUTPUT "${path}" @ONLY CONTENT "\
 [binaries]
 c = [@launcher@'${CMAKE_C_COMPILER}']
 cpp = [@launcher@'${CMAKE_CXX_COMPILER}']
-ar = '${VENERA_MINGW_TRIPLE}-ar'
-strip = '${VENERA_MINGW_TRIPLE}-strip'
-windres = '${VENERA_MINGW_TRIPLE}-windres'
+ar = '${CMAKE_AR}'
+strip = '${CMAKE_STRIP}'
+windres = '${CMAKE_RC_COMPILER}'
+@widl@
 
 [built-in options]
 c_args = [@c_args@]

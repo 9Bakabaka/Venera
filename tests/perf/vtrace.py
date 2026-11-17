@@ -14,13 +14,14 @@
       after the guest process whose work it runs.
 
 A run directory holds events.jsonl (the guest's trace, decoded by venera-trace) and, from a capture, host.txt,
-kvm.txt and threads.txt (hosttrace.sh). Guest timestamps are the guest's TSC, which KVM keeps at the host's plus an
-offset (kvm.txt): host = guest - offset.
+kvm.txt and threads.txt (hosttrace.sh). x86 guest timestamps use TSC, which KVM keeps at the host's plus an
+offset (kvm.txt): host = guest - offset. ARM64 guest-only traces use QPC; its rate is stored in the metadata.
 """
 import argparse
 import base64
 import bisect
 import json
+import math
 import os
 import re
 import socket
@@ -68,6 +69,8 @@ class Run:
         self.offset = 0
         self.host = None
         if (self.dir / 'host.txt').exists():
+            if self.clock != 'tsc':
+                sys.exit(f'{self.dir}: host correlation requires TSC; record ARM64 traces with --no-host')
             self.offset = load_kvm_offset(self.dir / 'kvm.txt')
             self.host = Host(self.dir)
         syncs = [i for i in self.instants if i[3] == 'venera-trace.sync']
@@ -104,12 +107,17 @@ class Run:
                     self.threads[e['tid']] = e['name']
                 elif k == 'meta':
                     self.meta = e
-        self.hz = self.meta.get('tsc_hz') or sys.exit(f'{self.dir}: events.jsonl has no TSC rate')
+        self.clock = self.meta.get('clock', 'tsc')
+        if self.clock not in ('tsc', 'qpc'):
+            sys.exit(f'{self.dir}: unknown guest trace clock {self.clock!r}')
+        self.hz = self.meta.get('clock_hz', self.meta.get('tsc_hz'))
+        if not isinstance(self.hz, (float, int)) or not math.isfinite(self.hz) or self.hz <= 0:
+            sys.exit(f'{self.dir}: events.jsonl has no valid clock rate')
         self.spans.sort()
         self.etw.sort(key=lambda e: e[0])
 
     def scenarios(self):
-        """(name, start, end) in guest TSC: uibench's scenarios, else the whole trace."""
+        """(name, start, end) in guest clock ticks: uibench's scenarios, else the whole trace."""
         out = []
         report = self.dir / 'uibench.txt'
         if report.exists():
@@ -234,7 +242,7 @@ def summarize(run, a, b):
 
     rows = []
     if run.sync_error_us is not None:
-        rows.append(('clock check: |etw t - rdtsc| us', f'{run.sync_error_us:.1f}'))
+        rows.append((f'clock check: |etw t - {run.clock}| us', f'{run.sync_error_us:.1f}'))
     rows.append(('events lost', str(run.meta.get('events_lost', 0))))
     rows.append(('seconds', f'{secs:.2f}'))
     out['trace'] = rows

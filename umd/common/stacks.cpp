@@ -4,6 +4,7 @@
 // hold the heap lock. Frames are module+offset, resolved offline (our DLLs and the ICD carry their symbols; system
 // DLLs by their exports).
 #include "log.h"
+#include "stack_walk.h"
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -28,54 +29,10 @@ struct ThreadStack {
 
 ThreadStack g_stacks[kMaxThreads];
 
-#ifdef _WIN64
-// Walks by the unwind data in .pdata; a frame without it is a leaf only at the top, where the return address is at
-// the stack pointer. Stops at the first frame it cannot unwind.
 unsigned walk(CONTEXT ctx, DWORD64* pc)
 {
-    unsigned n = 0;
-    while (n < kMaxFrames && ctx.Rip) {
-        pc[n++] = ctx.Rip;
-        DWORD64 base = 0;
-        PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &base, nullptr);
-        if (fn) {
-            void* handler_data = nullptr;
-            DWORD64 establisher = 0;
-            RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, fn, &ctx, &handler_data, &establisher, nullptr);
-        } else if (n == 1) {
-            ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
-            ctx.Rsp += 8;
-        } else {
-            break;
-        }
-    }
-    return n;
+    return walk_stack(ctx, pc, kMaxFrames);
 }
-#else
-// x86 has no unwind data to walk by: follows the EBP chain, which holds as far as frames keep a frame pointer (GCC
-// omits it by default, so stacks can end early). The chain is read with ReadProcessMemory, which fails rather than
-// faults on a bad pointer, and has to grow up the stack.
-unsigned walk(CONTEXT ctx, DWORD64* pc)
-{
-    unsigned n = 0;
-    if (!ctx.Eip)
-        return 0;
-    pc[n++] = ctx.Eip;
-    DWORD ebp = ctx.Ebp;
-    while (n < kMaxFrames && ebp >= ctx.Esp && !(ebp & 3)) {
-        DWORD frame[2];   // the caller's EBP, the return address
-        SIZE_T got = 0;
-        if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(ebp), frame, sizeof(frame), &got) ||
-            got != sizeof(frame) || !frame[1])
-            break;
-        pc[n++] = frame[1];
-        if (frame[0] <= ebp)
-            break;
-        ebp = frame[0];
-    }
-    return n;
-}
-#endif
 
 void format_frame(DWORD64 pc, char* out, size_t size)
 {
@@ -139,7 +96,14 @@ LONG CALLBACK log_exception(EXCEPTION_POINTERS* e)
         // What was accessed, and the registers that usually hold the pointer involved.
         const ULONG_PTR kind = e->ExceptionRecord->ExceptionInformation[0];
         const CONTEXT& c = *e->ContextRecord;
-#ifdef _WIN64
+#if defined(_M_ARM64) || defined(__aarch64__)
+        logf(LogLevel::warn, "  %s 0x%llx; pc %llx sp %llx fp %llx lr %llx x0 %llx x1 %llx",
+             kind == 0 ? "reading" : kind == 1 ? "writing" : "executing",
+             static_cast<unsigned long long>(e->ExceptionRecord->ExceptionInformation[1]),
+             static_cast<unsigned long long>(c.Pc), static_cast<unsigned long long>(c.Sp),
+             static_cast<unsigned long long>(c.Fp), static_cast<unsigned long long>(c.Lr),
+             static_cast<unsigned long long>(c.X0), static_cast<unsigned long long>(c.X1));
+#elif defined(_WIN64)
         logf(LogLevel::warn, "  %s 0x%llx; rax %llx rbx %llx rcx %llx rdx %llx rsi %llx rdi %llx r8 %llx r9 %llx",
              kind == 0 ? "reading" : kind == 1 ? "writing" : "executing",
              static_cast<unsigned long long>(e->ExceptionRecord->ExceptionInformation[1]),

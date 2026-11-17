@@ -12,6 +12,29 @@
       # The 32-bit UMDs and Mesa drivers, for 32-bit processes (the *Wow entries in pkg/venera.inf).
       mingw32 = pkgs.pkgsCross.mingw32;
       mcfg32 = mingw32.windows.mcfgthreads;
+      # GCC does not target Windows on Arm. Keep LLVM-MinGW's compiler and runtime
+      # together, including the libraries linked into DXVK, vkd3d-proton and Mesa.
+      llvmMingw = pkgs.stdenvNoCC.mkDerivation {
+        pname = "llvm-mingw";
+        version = "20251104";
+        src = pkgs.fetchurl {
+          url = "https://github.com/mstorsjo/llvm-mingw/releases/download/20251104/llvm-mingw-20251104-ucrt-ubuntu-22.04-x86_64.tar.xz";
+          sha256 = "3aed6fa47be909884cb3e5634d6b7254604d7104832d6312f8435fb23d5a9bab";
+        };
+        nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+        buildInputs = [ pkgs.stdenv.cc.cc.lib pkgs.zlib ];
+        dontConfigure = true;
+        dontBuild = true;
+        # Target PE DLLs and archives are already built; only host ELF tools need
+        # their interpreter and library search paths adjusted for the Nix store.
+        dontStrip = true;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out"
+          cp -a . "$out/"
+          runHook postInstall
+        '';
+      };
       # vkd3d-proton generates its D3D12 headers from IDL with widl. nixpkgs ships widl only with Wine: expose just
       # that binary, so wine itself stays off PATH.
       widl = pkgs.runCommand "widl" { } ''
@@ -48,6 +71,7 @@
         VENERA_MINGW_MCFG_LIB = "${mcfg}/lib";
         VENERA_MINGW32_MCFG_INCLUDE = "${mcfg32.dev}/include";
         VENERA_MINGW32_MCFG_LIB = "${mcfg32}/lib";
+        VENERA_LLVM_MINGW_ROOT = "${llvmMingw}";
 
         # Read by cmake/clang-cl-kmd.cmake. Not on PATH: unwrapped clang would shadow the host cc/cpp.
         VENERA_CLANG_CL = "${pkgs.llvmPackages.clang-unwrapped}/bin/clang-cl";

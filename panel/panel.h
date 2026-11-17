@@ -428,7 +428,7 @@ int compareVersions(const std::wstring& a, const std::wstring& b);
 
 struct Update {
     std::wstring version;  // the newest on the channel
-    std::wstring name;     // the file: venera-setup-<version>.exe, or a build of main's venera-setup-<version>.zip
+    std::wstring name;     // venera-setup-<version>-<arch>.exe, or a develop artifact with .zip
     std::wstring url;      // where it downloads from
     std::string sha256;    // GitHub's checksum of the file, in hex
     ULONGLONG size = 0;

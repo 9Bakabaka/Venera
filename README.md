@@ -45,7 +45,8 @@ to use a QEMU launch script with SDL. Nvidia GPUs need a set of patches applied 
 
 ### Guest
 
-- Windows 11, x64. Tested on 25H2.
+- Windows 11, x64 or Arm64. The original x64 configuration was tested on 25H2;
+  see [Windows on Arm](docs/windows-arm64.md) for build instructions and validation scope.
 - Secure Boot off. Or you buy me a Windows driver certificate.
 
 
@@ -54,7 +55,8 @@ Also check [Software Compatibility Notes](docs/compatibility/software) for a lis
 ## Installing
 
 Run `venera-setup.exe` in the guest. Download builds from the [Actions](https://github.com/Aleksanaa/venera/actions)
-page and tagged releases.
+page and tagged releases. Choose the `-x64` or `-arm64` installer matching the guest OS.
+The installer and control panel updater check the native OS architecture.
 
 Do take a VM snapshot first.
 
@@ -63,7 +65,8 @@ and download updates.
 
 ## Building
 
-Everything builds on a Linux host inside `nix develop` (see `flake.nix`).
+Everything builds on an x86_64 Linux host inside `nix develop` (see `flake.nix`).
+The default is an x64 Windows guest; [Windows on Arm](docs/windows-arm64.md) documents the Arm64 target.
 
 The KMD and the Mesa drivers:
 
@@ -74,11 +77,11 @@ cmake -S kmd -B build/kmd -G Ninja -DCMAKE_TOOLCHAIN_FILE=$PWD/cmake/clang-cl-km
 cmake -S . -B build/win -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake && cmake --build build/win
 ```
 
-`cmake/fetch-winkits.sh` extracts the WDK and SDK headers from Microsoft's NuGet packages (Microsoft.Windows.WDK.x64
+`cmake/fetch-winkits.sh` extracts the WDK and SDK headers from Microsoft's NuGet packages (Microsoft.Windows.WDK.x64 (or Microsoft.Windows.WDK.ARM64 for Arm64)
 and Microsoft.Windows.SDK.CPP, 10.0.26100) into `refs/winkits/{wdk,sdk}`. The KMD build test-signs `viogpu3d.sys`
 with the PFX in `VENERA_KMD_SIGN_PFX`; any code signing certificate does, as the kernel accepts any signature in test
 mode. The installer is `build/win/setup/venera-setup.exe` (`.github/workflows/build.yml` does the same). The drivers
-are built for 32-bit processes too: `icd/build.sh` builds Mesa for both x86_64 and i686, and the main build runs a
+are built for x86 32-bit processes too: `icd/build.sh` builds Mesa for both x86_64 and i686, and the main build runs a
 32-bit build of the UMDs in `build/win/umd32`.
 
 For testing, make `build/` visible in the guest and run this from an elevated PowerShell in `build\win\tests\win`; it

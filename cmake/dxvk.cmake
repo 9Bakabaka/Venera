@@ -43,4 +43,6 @@ target_include_directories(venera-dxvk SYSTEM INTERFACE
     "${DXVK_BUILD}/meson")
 # What DXVK's meson.build sets for every source on Windows.
 target_compile_definitions(venera-dxvk INTERFACE NOMINMAX _WIN32_WINNT=0xa00 DXVK_WSI_WIN32)
-target_compile_options(venera-dxvk INTERFACE -msse -msse2 -msse3 -mfpmath=sse)
+if(VENERA_TARGET_ARCH STREQUAL "x64" OR VENERA_TARGET_ARCH STREQUAL "x86")
+  target_compile_options(venera-dxvk INTERFACE -msse -msse2 -msse3 -mfpmath=sse)
+endif()

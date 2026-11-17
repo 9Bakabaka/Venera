@@ -47,6 +47,10 @@ const Credit kCredits[] = {
      L"https://www.mingw-w64.org"},
     {L"GCC runtime and mcfgthread", L"C and C++ runtime libraries, linked in", L"GPL-3.0 with GCC exception",
      L"https://github.com/lhmouse/mcfgthread"},
+#if defined(_M_ARM64) || defined(__aarch64__)
+    {L"LLVM runtime", L"Native ARM64 C and C++ runtime libraries, linked in", L"Apache-2.0 with LLVM exception",
+     L"https://llvm.org"},
+#endif
 };
 constexpr int kCreditCount = sizeof(kCredits) / sizeof(kCredits[0]);
 

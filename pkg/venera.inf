@@ -41,9 +41,9 @@ viogpuap.exe           = 1
 DefaultDestDir = 13   ; DriverStore
 
 [Manufacturer]
-%Provider% = VENERA, NTamd64.10.0...22000
+%Provider% = VENERA, NT@VENERA_INF_ARCH@.10.0...22000
 
-[VENERA.NTamd64.10.0...22000]
+[VENERA.NT@VENERA_INF_ARCH@.10.0...22000]
 %Device.Desc% = VENERA_Inst, PCI\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01
 
 [VENERA_Inst.NT]
@@ -121,6 +121,8 @@ HKR,, OpenGLDriverName,        %REG_MULTI_SZ%, %13%\viogpu_wgl.dll
 HKR,, OpenGLDriverNameWow,     %REG_MULTI_SZ%, %13%\viogpu_wgl_32.dll
 HKR,, OpenGLFlags,             %REG_DWORD%, 3
 HKR,, OpenGLVersion,           %REG_DWORD%, 4096
+HKR,, OpenGLFlagsWow,          %REG_DWORD%, 3
+HKR,, OpenGLVersionWow,        %REG_DWORD%, 4096
 ; As yttrium's package sets them: preemption on; GPU timeouts do not reset the device (TdrDebugMode 1: ignore).
 HKLM, "SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Scheduler", EnablePreemption, %REG_DWORD%, 1
 HKLM, "SYSTEM\CurrentControlSet\Control\GraphicsDrivers", TdrDebugMode, %REG_DWORD%, 1

@@ -48,12 +48,14 @@ DWORD os_build()
     return info.dwBuildNumber;
 }
 
-bool native_x64()
+venera::Architecture native_architecture()
 {
+    static_assert(static_cast<USHORT>(venera::Architecture::x64) == IMAGE_FILE_MACHINE_AMD64);
+    static_assert(static_cast<USHORT>(venera::Architecture::arm64) == IMAGE_FILE_MACHINE_ARM64);
     USHORT process = 0, native = 0;
     if (!IsWow64Process2(GetCurrentProcess(), &process, &native))
-        return false;
-    return native == IMAGE_FILE_MACHINE_AMD64;
+        return venera::Architecture::unknown;
+    return static_cast<venera::Architecture>(native);
 }
 
 ULONG code_integrity_options()
@@ -181,7 +183,7 @@ SystemState inspect()
 {
     SystemState s;
     s.build = os_build();
-    s.x64 = native_x64();
+    s.native_arch = native_architecture();
     find_devices(s);
 
     FIRMWARE_TYPE firmware = FirmwareTypeUnknown;
@@ -203,7 +205,7 @@ SystemState inspect()
 
 std::wstring SystemState::summary() const
 {
-    std::wstring out = format(L"Windows build %lu, %ls\n", build, x64 ? L"x64" : L"not x64");
+    std::wstring out = format(L"Windows build %lu, %ls\n", build, venera::architectureName(native_arch));
     out += format(L"VirtIO GPU: %d present\n", devices);
     if (devices)
         out += device_driver.empty() ? std::wstring(L"  driver: none configured\n")

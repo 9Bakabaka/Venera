@@ -1,30 +1,32 @@
 // SPDX-License-Identifier: MIT
 // Records a performance trace in the guest: our UMDs' and Venus ICD's timeline events (the Venera ETW provider,
-// umd/common/trace.h) together with dxgkrnl's and DWM's, all timestamped with the CPU's TSC, which KVM offsets by a
-// constant from the host's: tests/perf/vtrace.py lines them up with a host trace of the same time. Run elevated.
+// umd/common/trace.h) together with dxgkrnl's and DWM's. x86 uses TSC for host correlation; ARM64 uses QPC.
+// tests/perf/vtrace.py reads both clocks; host correlation requires an x86 KVM guest. Run elevated.
 //   venera-trace record SECONDS DIR   start, wait, stop
 //   venera-trace start DIR            start tracing into DIR\trace.etl
 //   venera-trace stop                 stop, and decode into events.jsonl next to the etl
 //   venera-trace decode ETL JSONL     decode again
 // events.jsonl has one JSON object per line, told apart by "k":
-//   meta      tsc_hz (the TSC's rate, measured against QPC), events_lost, buffers_lost
+//   meta      clock (tsc or qpc), clock_hz, events_lost, buffers_lost
 //   proc      pid, name           thread  pid, tid, name      (processes and named threads seen at start and stop)
 //   begin     t, pid, tid, name, v         end  t, pid, tid
 //   instant   t, pid, tid, name, id, v     counter  t, pid, tid, name, v
 //   etw       t, pid, tid, p (provider), id, ev (task/opcode), f (fields, formatted as strings)
-// t is the TSC. venera-trace itself writes instants "venera-trace.sync" with its own reading of the TSC as v, at
+// t uses the selected clock. Instants "venera-trace.sync" contain a reading of that same clock as v, at
 // start and stop: vtrace.py checks that t matches v.
 #include <windows.h>
 
 #include <evntcons.h>
 #include <evntprov.h>
 #include <evntrace.h>
-#include <intrin.h>
 #include <tdh.h>
 #include <tlhelp32.h>
 
+#include "trace_clock.h"
+
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -154,11 +156,11 @@ void write_sync()
     if (EventRegister(&kVenera, nullptr, nullptr, &handle) != ERROR_SUCCESS)
         return;
     const char name[] = "venera-trace.sync";
-    const uint64_t id = 0, tsc = __rdtsc();
+    const uint64_t id = 0, ticks = venera::trace_clock::now();
     EVENT_DATA_DESCRIPTOR d[3];
     EventDataDescCreate(&d[0], name, sizeof(name));
     EventDataDescCreate(&d[1], &id, sizeof(id));
-    EventDataDescCreate(&d[2], &tsc, sizeof(tsc));
+    EventDataDescCreate(&d[2], &ticks, sizeof(ticks));
     EVENT_DESCRIPTOR e;
     EventDescCreate(&e, 3, 0, 0, 4, 0, 0, 0);
     EventWrite(handle, &e, 3, d);
@@ -212,7 +214,7 @@ int start(const char* dir_arg)
     props = properties();
     wcsncpy(props->logfile, etl.c_str(), MAX_PATH - 1);
     props->p.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-    props->p.Wnode.ClientContext = 3;   // timestamps from the CPU's cycle counter: the TSC
+    props->p.Wnode.ClientContext = venera::trace_clock::client_context;
     props->p.LogFileMode = EVENT_TRACE_FILE_MODE_SEQUENTIAL;
     props->p.BufferSize = 1024;   // KB
     props->p.MinimumBuffers = 64;
@@ -375,20 +377,16 @@ struct Decoder {
     static void WINAPI callback(PEVENT_RECORD r) { static_cast<Decoder*>(r->UserContext)->event(*r); }
 };
 
-// The TSC's rate, against QPC.
-double tsc_hz()
+std::string meta_line(const char* clock, double hz, ULONG events_lost, ULONG buffers_lost)
 {
-    LARGE_INTEGER f, q0, q1;
-    QueryPerformanceFrequency(&f);
-    QueryPerformanceCounter(&q0);
-    const uint64_t t0 = __rdtsc();
-    Sleep(200);
-    QueryPerformanceCounter(&q1);
-    const uint64_t t1 = __rdtsc();
-    return static_cast<double>(t1 - t0) * f.QuadPart / (q1.QuadPart - q0.QuadPart);
+    char line[256];
+    std::snprintf(line, sizeof(line),
+                  "{\"k\":\"meta\",\"clock\":\"%s\",\"clock_hz\":%.0f,\"events_lost\":%lu,\"buffers_lost\":%lu}",
+                  clock, hz, events_lost, buffers_lost);
+    return line;
 }
 
-int decode(const std::wstring& etl, const std::wstring& jsonl, const std::string& meta)
+int decode(const std::wstring& etl, const std::wstring& jsonl, ULONG events_lost, ULONG buffers_lost)
 {
     Decoder d;
     d.out = _wfopen(jsonl.c_str(), L"w");
@@ -396,7 +394,6 @@ int decode(const std::wstring& etl, const std::wstring& jsonl, const std::string
         std::fprintf(stderr, "venera-trace: cannot write %s\n", utf8(jsonl.c_str()).c_str());
         return 1;
     }
-    std::fprintf(d.out, "%s\n", meta.c_str());
     // The names taken at start, then the ones now.
     const std::wstring names = etl.substr(0, etl.find_last_of(L'\\') + 1) + L"names.jsonl";
     if (FILE* f = _wfopen(names.c_str(), L"r")) {
@@ -418,6 +415,25 @@ int decode(const std::wstring& etl, const std::wstring& jsonl, const std::string
         std::fclose(d.out);
         return 1;
     }
+    // Decode using the clock recorded in the ETL, including QPC captures from
+    // another architecture. QPC's frequency is carried in the trace header.
+    const ULONG clock_type = log.LogfileHeader.ReservedFlags;
+    const char* clock = nullptr;
+    double hz = 0;
+    if (clock_type == 1) {
+        clock = "qpc";
+        hz = static_cast<double>(log.LogfileHeader.PerfFreq.QuadPart);
+    } else if (clock_type == 3 && venera::trace_clock::client_context == 3) {
+        clock = "tsc";
+        hz = venera::trace_clock::frequency();
+    }
+    if (!clock || hz <= 0) {
+        std::fprintf(stderr, "venera-trace: unsupported ETL clock %lu on this decoder\n", clock_type);
+        CloseTrace(h);
+        std::fclose(d.out);
+        return 1;
+    }
+    std::fprintf(d.out, "%s\n", meta_line(clock, hz, events_lost, buffers_lost).c_str());
     const ULONG status = ProcessTrace(&h, 1, nullptr, nullptr);
     CloseTrace(h);
     std::fclose(d.out);
@@ -427,14 +443,6 @@ int decode(const std::wstring& etl, const std::wstring& jsonl, const std::string
     }
     std::printf("decoded %llu events into %s\n", static_cast<unsigned long long>(d.count), utf8(jsonl.c_str()).c_str());
     return 0;
-}
-
-std::string meta_line(double hz, ULONG events_lost, ULONG buffers_lost)
-{
-    char line[256];
-    std::snprintf(line, sizeof(line), "{\"k\":\"meta\",\"tsc_hz\":%.0f,\"events_lost\":%lu,\"buffers_lost\":%lu}", hz,
-                  events_lost, buffers_lost);
-    return line;
 }
 
 int stop()
@@ -450,7 +458,7 @@ int stop()
         std::fprintf(stderr, "venera-trace: %lu events lost: the trace has gaps\n", props->p.EventsLost);
     const std::wstring etl = props->logfile;
     const std::wstring jsonl = etl.substr(0, etl.find_last_of(L'\\') + 1) + L"events.jsonl";
-    return decode(etl, jsonl, meta_line(tsc_hz(), props->p.EventsLost, props->p.RealTimeBuffersLost));
+    return decode(etl, jsonl, props->p.EventsLost, props->p.RealTimeBuffersLost);
 }
 
 int usage()
@@ -478,6 +486,6 @@ int main(int argc, char** argv)
         return stop();
     }
     if (cmd == "decode" && argc == 4)
-        return decode(widen(argv[2]), widen(argv[3]), meta_line(tsc_hz(), 0, 0));
+        return decode(widen(argv[2]), widen(argv[3]), 0, 0);
     return usage();
 }

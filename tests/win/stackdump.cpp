@@ -109,14 +109,22 @@ void dump(DWORD pid)
             ctx.ContextFlags = CONTEXT_FULL;
             if (GetThreadContext(t, &ctx)) {
                 STACKFRAME64 f{};
+#if defined(_M_ARM64) || defined(__aarch64__)
+                constexpr DWORD machine = IMAGE_FILE_MACHINE_ARM64;
+                f.AddrPC.Offset = ctx.Pc;
+                f.AddrStack.Offset = ctx.Sp;
+                f.AddrFrame.Offset = ctx.Fp;
+#else
+                constexpr DWORD machine = IMAGE_FILE_MACHINE_AMD64;
                 f.AddrPC.Offset = ctx.Rip;
-                f.AddrPC.Mode = AddrModeFlat;
                 f.AddrStack.Offset = ctx.Rsp;
-                f.AddrStack.Mode = AddrModeFlat;
                 f.AddrFrame.Offset = ctx.Rbp;
+#endif
+                f.AddrPC.Mode = AddrModeFlat;
+                f.AddrStack.Mode = AddrModeFlat;
                 f.AddrFrame.Mode = AddrModeFlat;
                 while (pcs.size() < 64 &&
-                       StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, t, &f, &ctx, nullptr, SymFunctionTableAccess64,
+                       StackWalk64(machine, process, t, &f, &ctx, nullptr, SymFunctionTableAccess64,
                                    SymGetModuleBase64, nullptr) &&
                        f.AddrPC.Offset)
                     pcs.push_back(f.AddrPC.Offset);
